@@ -86,18 +86,18 @@ def render_center_line(env):
 	gl.glVertex3f(pos[0] + 4, pos[1] + 2, 0)
 	gl.glEnd()
 
-# def find_nearest_path(pos_cur, xy_path):
-# 	distance = np.sqrt(np.square(pos_cur[0] - path[:,0]) + np.square(pos_cur[1] - path[:,1]))
-# 	idx = np.argmin(distance)
-# 	sign = np.sign(pos_cur[1] - path[idx,0])
+def find_nearest_path(pos_cur, path):
+	distance = np.sqrt(np.square(pos_cur[0] - path[:,0]) + np.square(pos_cur[1] - path[:,1]))
+	idx = np.argmin(distance)
+	sign = np.sign(pos_cur[1] - path[idx,0])
 
-# 	return idx, sign*distance[idx]
+	return idx, sign*distance[idx]
 
-def update_dynamics(env, path_s, path_k, path_state, pos_prev):
+def update_dynamics(env, path_s, path_k, path_state):
 	pos_cur = np.array([np.asarray(env.car.hull.position)[0],np.asarray(env.car.hull.position)[1],env.car.hull.angle])
 	dt = 1.0/FPS
-	Ux = (pos_cur[0] - pos_prev[0])/dt
-	Uy = (pos_cur[1] - pos_prev[1])/dt
+	Ux = env.car.hull.vehicle_velocity[0]
+	Uy = env.car.hull.vehicle_velocity[1]
 
 	s = path_state[0]
 	e = path_state[1]
@@ -105,7 +105,8 @@ def update_dynamics(env, path_s, path_k, path_state, pos_prev):
 
 	path_idx = (np.abs(s - path_s)).argmin()
 	K = path_k[path_idx]
-	r = (pos_cur[2] - pos_prev[2])/dt
+	#r = (pos_cur[2] - pos_prev[2])/dt
+	r = env.car.hull.yaw_rate
 
 	
 
@@ -119,87 +120,101 @@ def update_dynamics(env, path_s, path_k, path_state, pos_prev):
 
 	return np.array([s, e, d_psi]), pos_cur
 
-def lookahead_controller(path_state):
-	Kla = 7
-	Caf = 1000
-	xla = 10
+def lookahead_controller(env, path, path_state, car_state, speed_profile, prev_max):
+	car = env.car
+	Kla = 3500
+	xla = 15
 
 	e = path_state[1]
 	d_psi = path_state[2]
-	# path_idx, e = find_nearest_path(pos_cur, path)
+	path_idx, e = find_nearest_path(car_state, path)
 
-	# K = path[path_idx,1]
-	# dif = env.car.hull.angle - np.asarray(env.track)[0,1]
-	# dif_sign = np.sign(np.mod(dif,np.pi/2.0) - np.mod(dif,np.pi))
-	# if(dif_sign ==0):
-	# 	dif_sign = 1
+	Ux_des = speed_profile[path_idx]
+
+	Kd = 0.00000001
+	Ux = car.hull.vehicle_velocity[0]
+	lat_force = 0
+	Fxtotal = Kd*(Ux_des - Ux)
+	print(Fxtotal)
+	if(Fxtotal > prev_max):
+		lat_force = 1
+		new_max = Fxtotal
+	elif(Fxtotal < 0):
+		lat_force = -1
+		new_max = prev_max
+	else:
+		print('does this happen?')
+		lat_force = Fxtotal/prev_max/4.0
+		print(lat_force)
+		new_max = prev_max
+
+
+	K = path[path_idx,1]
+	dif = env.car.hull.angle - np.asarray(env.track)[0,1]
+	dif_sign = np.sign(np.mod(dif,np.pi/2.0) - np.mod(dif,np.pi))
+	if(dif_sign ==0):
+		dif_sign = 1
 
 	# dif_sign*np.mod(dif,np.pi/2.0)
 
-	print(e)
-	delta = -Kla*(e + xla*d_psi)/Caf
-	return delta
 
-def 
+	Caf = 275000
+	delta = -Kla*(e + xla*d_psi)/Caf
+	return -delta, lat_force, new_max
+
+def generate_speed_profile(path_s, path_k, env):
+	F_max = env.car.friction*env.car.m*9.81
+	a_max = (F_max/env.car.m)
+
+	profile = np.zeros(path_k.size)
+
+	lookahead = 2
+	for idx in range(0,path_k.size):
+		if(idx + lookahead < path_k.size):
+			average_k = np.average(path_k[idx:idx+lookahead])
+		else:
+			average_k = np.average(path_k[idx:])
+
+		max_Ux = np.sqrt(1.0/(average_k + 0.0001)*a_max)
+		profile[idx] = np.minimum(max_Ux
+	return profile
+
 
 
 def main():
 	env = gym.make('CarRacing-v0')
 
-
-
+	
 	env.reset()
-	#print(env.road_poly[0])
-	#print(np.asarray(env.track).shape)
-	viewer = env.viewer
-	#print(viewer)
 
 	center_line = extract_center_line(env)
 
 	interp_center_line = interpolate_path(center_line, center_line.shape[0]*2)
 
 	interp_s, interp_k = cartesian_to_path(interp_center_line)
-	print(interp_center_line[:5])
-	print(interp_k[:5])
-
-
 	path_state = np.array([interp_s[0], 0, 0])
-	car_state = np.array([np.asarray(env.car.hull.position)[0],np.asarray(env.car.hull.position)[1],env.car.hull.angle])
-	#env.render()
-	x_prev = env.car.hull.position[0]
-	y_prev = env.car.hull.position[1]
-	for _ in range(500):
+	speed_profile = generate_speed_profile(interp_s, interp_k, env)
+	new_max = 0
+	for idx in range(1000):
 		env.render()
-		#render_center_line(env)
-		path_state, car_state = update_dynamics(env, interp_s, interp_k, path_state, car_state)
-		#print(path_state)
-		#print(car_state)
-		delta = lookahead_controller(path_state)
-		action = [delta, 0.1, 0]
-		print('hi')
-		print((env.car.wheels[0].steer - env.car.wheels[0].joint.angle)*360/(2*np.pi))
-		# Vx = env.car.hull.linearVelocity[0]
-		# Vy = env.car.hull.linearVelocity[1]
-		# angle = env.car.hull.angle + np.pi/2
+
+		path_state, car_state = update_dynamics(env, interp_s, interp_k, path_state)
+		delta, Fx, new_max = lookahead_controller(env, interp_center_line, path_state, car_state, speed_profile, new_max)
+		if(Fx > 0):
+			action = [delta, 1, 0]
+		else:
+			action = [delta, 0, 1]
+		# action = [delta, 0.8, 0]
+		# if(idx > 150):
+		# 	action = [delta, 0, 0.6]
+		# if(idx > 300):
+		# 	action = [delta, 0.4, 0]
+		# if(idx > 400):
+		# 	action = [delta, 0, 0]
+		# print(action[1])
 		# print('hi')
-		# print(env.car.hull.linearVelocity[0])
-		# print(env.car.hull.linearVelocity[1])
-		# print(env.car.hull.angle)
-		# v_x = Vx*np.cos(angle) + Vy*np.sin(angle)
-		# v_y = Vx*-np.sin(angle) + Vy*np.cos(angle)
-
-		# dx = (env.car.hull.position[0] - x_prev)*50
-		# dy = (env.car.hull.position[1] - y_prev)*50
-
-		# print(v_x)
-		# print(v_y)
-
-
-		# print(get_car_position(env))
-		# print(np.mod(env.car.hull.angle, np.pi))
-		# print(np.asarray(env.track)[0,1])
-
-		#env.step(env.action_space.sample())
+		# print(env.car.hull.position)
+		# print(env.track[0][1:4])
 		env.step(action)
 	time.sleep(20)
 	env.close()
